@@ -70,7 +70,7 @@ update_shell() {
 
 case "$SHELL" in
   */zsh)
-    if [ "$(command -v zsh)" != '/usr/local/bin/zsh' ] ; then
+    if [ "$(command -v zsh)" != "$HOMEBREW_PREFIX/bin/zsh" ] ; then
       update_shell
     fi
     ;;
@@ -78,6 +78,21 @@ case "$SHELL" in
     update_shell
     ;;
 esac
+
+# checks architecture
+if [ "$(uname -m)" = "arm64" ]
+  then
+  # checks if Rosetta is already installed
+  if ! pkgutil --pkg-info=com.apple.pkg.RosettaUpdateAuto > /dev/null 2>&1
+  then
+    echo "Installing Rosetta"
+    # Installs Rosetta2
+    softwareupdate --install-rosetta --agree-to-license
+  else
+    echo "Rosetta is installed"
+  fi
+fi
+
 
 gem_install_or_update() {
   if gem list "$1" --installed > /dev/null; then
@@ -103,14 +118,13 @@ if brew list | grep -Fq brew-cask; then
 fi
 
 fancy_echo "Updating Homebrew formulae ..."
-brew update --force # https://github.com/Homebrew/brew/issues/1151
+brew update
 brew bundle --file=- <<EOF
-tap "thoughtbot/formulae"
-tap "homebrew/services"
 tap "heroku/brew"
 
 # Unix
-brew "universal-ctags/universal-ctags/universal-ctags", args: ["HEAD"]
+brew "universal-ctags"
+brew "fzf"
 brew "git"
 brew "openssl"
 brew "rcm"
@@ -122,8 +136,7 @@ brew "watchman"
 brew "zsh"
 
 # Heroku
-brew "heroku/brew/heroku"
-brew "parity"
+brew "heroku/brew/heroku", trusted: true
 
 # GitHub
 brew "gh"
@@ -138,18 +151,20 @@ brew "yarn"
 cask "gpg-suite-no-mail"
 
 # Databases
-brew "postgres", restart_service: :changed
+brew "postgresql@18", restart_service: :changed
 brew "redis", restart_service: :changed
 EOF
-
-fancy_echo "Update heroku binary ..."
-brew unlink heroku
-brew link --force heroku
 
 fancy_echo "Configuring asdf version manager ..."
 if [ ! -d "$HOME/.asdf" ]; then
   brew install asdf
-  append_to_zshrc "source $(brew --prefix asdf)/asdf.sh" 1
+  # for future runs
+  # shellcheck disable=SC2016
+  append_to_zshrc 'export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"'
+  # for this session, so we don't need to restart the shell to do stuff with asdf
+  export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
+else
+  brew upgrade asdf
 fi
 
 alias install_asdf_plugin=add_or_update_asdf_plugin
@@ -157,40 +172,39 @@ add_or_update_asdf_plugin() {
   local name="$1"
   local url="$2"
 
-  if ! asdf plugin-list | grep -Fq "$name"; then
-    asdf plugin-add "$name" "$url"
+  if ! asdf plugin list | grep -Fq "$name"; then
+    asdf plugin add "$name" "$url"
   else
-    asdf plugin-update "$name"
+    asdf plugin update "$name"
   fi
 }
 
-# shellcheck disable=SC1090
-. "$(brew --prefix asdf)/asdf.sh"
+# shellcheck disable=SC1091
 add_or_update_asdf_plugin "ruby" "https://github.com/asdf-vm/asdf-ruby.git"
 add_or_update_asdf_plugin "nodejs" "https://github.com/asdf-vm/asdf-nodejs.git"
 
 install_asdf_language() {
   local language="$1"
   local version
-  version="$(asdf list-all "$language" | grep -v "[a-z]" | tail -1)"
+  version="$(asdf list all "$language" | grep -v "[a-z]" | tr -s '\n' | tail -1)"
 
   if ! asdf list "$language" | grep -Fq "$version"; then
     asdf install "$language" "$version"
-    asdf global "$language" "$version"
+    asdf set --home "$language" "$version"
   fi
 }
 
 fancy_echo "Installing latest Ruby ..."
 install_asdf_language "ruby"
-gem update --system
 number_of_cores=$(sysctl -n hw.ncpu)
-bundle config --global jobs $((number_of_cores - 1))
+bundle config set --global jobs $((number_of_cores - 1))
+gem_install_or_update "parity"
 
 fancy_echo "Installing latest Node ..."
 install_asdf_language "nodejs"
 
 if [ -f "$HOME/.laptop.local" ]; then
   fancy_echo "Running your customizations from ~/.laptop.local ..."
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1091
   . "$HOME/.laptop.local"
 fi
